@@ -38,7 +38,8 @@ import {
   GraduationCap,
   Settings,
   Clock,
-  Shield
+  Shield,
+  AlertCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { db } from '@/lib/supabaseApi';
@@ -65,6 +66,11 @@ const COMMUNITY_CATEGORIES = [
   'Web Development', 'Cybersecurity', 'Mathematics', 'Engineering',
   'Competitive Programming', 'Hackathons', 'Data Science', 'DevOps',
   'Mobile Development', 'Cloud Computing', 'Blockchain', 'UI/UX Design'
+];
+
+const COMMUNITY_VISIBILITY_OPTIONS = [
+  { value: 'public', label: 'Public', description: 'Anyone can find and join' },
+  { value: 'private', label: 'Private', description: 'Only invited members can join' }
 ];
 
 function CommunityPage() {
@@ -98,6 +104,8 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
   const [selectedCommunity, setSelectedCommunity] = useState(null);
   const [showCommunityDetail, setShowCommunityDetail] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [postToDelete, setPostToDelete] = useState(null);
 
   // Load data
   const loadData = useCallback(async () => {
@@ -184,11 +192,12 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
   // Handle post creation
   const handleCreatePost = async (e) => {
     e.preventDefault();
-    if (!newPost.content.trim()) return;
+    if (!newPost.content.trim() || !newPost.title.trim()) return;
     
     setCreatingPost(true);
     try {
       const postData = {
+        title: newPost.title,
         content: newPost.content,
         category: newPost.category || 'general',
         image_url: newPost.image_url,
@@ -201,26 +210,40 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
       // Update local state
       setPosts(prev => [created, ...prev]);
       setShowCreatePost(false);
-      setNewPost({ content: '', category: 'general', image_url: null, progress_data: null, community_id: null });
+      setNewPost({ 
+        title: '', 
+        content: '', 
+        category: 'general', 
+        image_url: null, 
+        progress_data: null, 
+        community_id: null,
+        type: 'discussion',
+        tags: [],
+        visibility: 'public'
+      });
       
       // Notify community members if posted in community
       if (created.community_id) {
         const members = await db.entities.CommunityMember.filter({ community_id: created.community_id });
         for (const member of members) {
           if (member.user_id !== user.id && member.notify_new_posts) {
-            await createNotification({
-              title: `New post in ${created.community_id}`,
-              content: `${user.full_name || 'Someone'} posted: ${created.content.substring(0, 50)}...`,
-              type: 'info',
-              action_url: `/community/posts/${created.id}`,
-            });
+            try {
+              await createNotification({
+                title: `New post in ${created.community_id}`,
+                content: `${user.full_name || 'Someone'} posted: ${created.content.substring(0, 50)}...`,
+                type: 'info',
+                action_url: `/community/posts/${created.id}`,
+              });
+            } catch (e) {
+              console.error('Failed to send notification:', e);
+            }
           }
         }
       }
     } catch (error) {
       console.error('Error creating post:', error);
     } finally {
-      setCreatingPost(false);
+       setCreatingPost(false);
     }
   };
 
@@ -315,11 +338,12 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
         const community = communities.find(c => c.id === communityId) || 
                          await db.entities.Community.get(communityId);
         
-        if (community && (community.visibility === 'public' || !community.require_approval)) {
-          await db.entities.CommunityMember.create({ 
-            community_id: communityId, 
-            role: 'member' 
-          });
+          if (community && (community.visibility === 'public' || !community.require_approval)) {
+            await db.entities.CommunityMember.create({ 
+              community_id: communityId,
+              user_id: user.id,
+              role: 'member' 
+            });
           
           const updatedCommunity = await db.entities.Community.get(communityId);
           setMyCommunities(prev => [...prev, updatedCommunity]);
@@ -354,6 +378,71 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
   const hasReacted = (postId, reactionType = 'like') => {
     // Simplified - would need reaction query
     return false;
+  };
+
+  // Handle delete post
+  const handleDeletePost = async (postId) => {
+    if (!isAuthenticated) return;
+    
+    try {
+      await db.entities.Post.delete(postId);
+      setPosts(prev => prev.filter(p => p.id !== postId));
+      try {
+        await createNotification({
+          title: 'Post Deleted',
+          content: 'Your post has been deleted successfully.',
+          type: 'achievement',
+        });
+      } catch (e) {
+        console.error('Failed to send notification:', e);
+      }
+      setShowDeleteConfirm(false);
+      setPostToDelete(null);
+    } catch (error) {
+      console.error('Error deleting post:', error);
+      try {
+        await createNotification({
+          title: 'Error',
+          content: 'Failed to delete post. Please try again.',
+          type: 'warning',
+        });
+      } catch (e) {
+        console.error('Failed to send notification:', e);
+      }
+    }
+  };
+
+  // Handle delete community
+  const handleDeleteCommunity = async (communityId) => {
+    if (!isAuthenticated) return;
+    
+    try {
+      await db.entities.Community.delete(communityId);
+      setCommunities(prev => prev.filter(c => c.id !== communityId));
+      setMyCommunities(prev => prev.filter(c => c.id !== communityId));
+      try {
+        await createNotification({
+          title: 'Community Deleted',
+          content: 'The community has been deleted successfully.',
+          type: 'achievement',
+        });
+      } catch (e) {
+        console.error('Failed to send notification:', e);
+      }
+      setShowCommunityDetail(false);
+      setSelectedCommunity(null);
+    } catch (error) {
+      console.error('Error deleting community:', error);
+      try {
+        await createNotification({
+          title: 'Error',
+          content: 'Failed to delete community. Please try again.',
+          type: 'warning',
+        });
+      } catch (e) {
+        console.error('Failed to send notification:', e);
+      }
+    }
   };
 
   // Format relative time
@@ -523,6 +612,7 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
                 loading={loading}
                 onReact={handleReact}
                 onSavePost={handleSavePost}
+                onDeletePost={handleDeletePost}
                 onJoinCommunity={handleJoinCommunity}
                 isMember={isMember}
                 formatTime={formatTime}
@@ -530,6 +620,7 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
                 setShowCreatePost={setShowCreatePost}
                 setSelectedCommunity={setSelectedCommunity}
                 setShowCommunityDetail={setShowCommunityDetail}
+                setActiveTab={setActiveTab}
               />
             )}
             
@@ -544,6 +635,7 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
                 isMember={isMember}
                 setShowCommunityDetail={setShowCommunityDetail}
                 setSelectedCommunity={setSelectedCommunity}
+                setActiveTab={setActiveTab}
               />
             )}
             
@@ -558,6 +650,7 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
                 formatTime={formatTime}
                 getPostTypeInfo={getPostTypeInfo}
                 setShowCreatePost={setShowCreatePost}
+                setActiveTab={setActiveTab}
               />
             )}
             
@@ -565,6 +658,7 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
               <MessagesPage
                 key="messages"
                 user={user}
+                setActiveTab={setActiveTab}
               />
             )}
             
@@ -575,6 +669,7 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
                 myProfile={myProfile}
                 setMyProfile={setMyProfile}
                 posts={posts}
+                setActiveTab={setActiveTab}
               />
             )}
             
@@ -587,6 +682,7 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
                 onReact={handleReact}
                 formatTime={formatTime}
                 getPostTypeInfo={getPostTypeInfo}
+                setActiveTab={setActiveTab}
               />
             )}
           </AnimatePresence>
@@ -613,6 +709,7 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
           user={user}
           isMember={isMember(selectedCommunity.id)}
           onJoin={handleJoinCommunity}
+          onDeleteCommunity={handleDeleteCommunity}
           onClose={() => { setShowCommunityDetail(false); setSelectedCommunity(null); }}
         />
       )}
@@ -623,9 +720,10 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
 function CommunityHome({ 
   user, myProfile, posts, trendingPosts, helpQuestions, 
   communities, myCommunities, activeStudents, loading,
-  onReact, onSavePost, onJoinCommunity, isMember,
+  onReact, onSavePost, onDeletePost, onJoinCommunity, isMember,
   formatTime, getPostTypeInfo,
-  setShowCreatePost, setSelectedCommunity, setShowCommunityDetail
+  setShowCreatePost, setSelectedCommunity, setShowCommunityDetail,
+  setActiveTab
 }) {
   if (loading) {
     return (
@@ -691,6 +789,7 @@ function CommunityHome({
                 getPostTypeInfo={getPostTypeInfo}
                 onReact={onReact}
                 onSavePost={onSavePost}
+                onDeletePost={onDeletePost}
                 compact={true}
               />
             ))}
@@ -853,11 +952,13 @@ function CommunityHome({
   );
 }
 
-function PostCard({ post, user, formatTime, getPostTypeInfo, onReact, onSavePost, compact = false, highlightHelp = false }) {
+function PostCard({ post, user, formatTime, getPostTypeInfo, onReact, onSavePost, onDeletePost, compact = false, highlightHelp = false }) {
   const typeInfo = getPostTypeInfo(post.type);
   const TypeIcon = typeInfo.icon;
   const isSaved = false; // Would check saved_posts
   const hasLiked = false; // Would check post_reactions
+  const isOwnPost = post.created_by_id === user.id;
+  const [showMenu, setShowMenu] = useState(false);
 
   return (
     <motion.article
@@ -898,6 +999,42 @@ function PostCard({ post, user, formatTime, getPostTypeInfo, onReact, onSavePost
                 </span>
               )}
             </div>
+            {isOwnPost && (
+              <div className="relative">
+                <button
+                  onClick={(e) => { e.stopPropagation(); setShowMenu(!showMenu); }}
+                  className="p-1.5 text-muted-foreground hover:text-foreground transition-colors rounded-lg hover:bg-muted"
+                  aria-label="Post options"
+                >
+                  <MoreHorizontal className="w-5 h-5" />
+                </button>
+                {showMenu && (
+                  <>
+                    <div 
+                      className="fixed inset-0 z-10" 
+                      onClick={() => setShowMenu(false)} 
+                    />
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      className="absolute right-0 top-full mt-1 z-20 w-40 bg-card rounded-xl border border-border/60 shadow-lg py-1"
+                    >
+                      <button
+                        onClick={() => {
+                          onDeletePost(post.id);
+                          setShowMenu(false);
+                        }}
+                        className="w-full flex items-center gap-2 px-4 py-2 text-sm text-rose-500 hover:bg-rose-500/10 transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        Delete
+                      </button>
+                    </motion.div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Content */}
@@ -1031,11 +1168,72 @@ function StudentCard({ student }) {
   );
 }
 
-function CommunitiesList({ user, communities, myCommunities, loading, onJoinCommunity, isMember, setShowCommunityDetail, setSelectedCommunity }) {
+function CommunitiesList({ user, communities, myCommunities, loading, onJoinCommunity, isMember, setShowCommunityDetail, setSelectedCommunity, setActiveTab }) {
+  const [showCreateCommunity, setShowCreateCommunity] = useState(false);
+  const [newCommunity, setNewCommunity] = useState({
+    name: '',
+    description: '',
+    category: 'general',
+    visibility: 'public',
+    icon: '',
+    color: 'bg-primary/10 text-primary'
+  });
+  const [creatingCommunity, setCreatingCommunity] = useState(false);
+
+  const handleCreateCommunity = async (e) => {
+    e.preventDefault();
+    if (!newCommunity.name.trim() || !newCommunity.description.trim()) return;
+    
+    setCreatingCommunity(true);
+    try {
+      const communityData = {
+        name: newCommunity.name,
+        description: newCommunity.description,
+        visibility: newCommunity.visibility,
+        icon: newCommunity.icon || newCommunity.name.charAt(0).toUpperCase(),
+        color: newCommunity.color,
+      };
+      
+      const created = await db.entities.Community.create(communityData);
+      
+      // Auto-join as owner
+      await db.entities.CommunityMember.create({
+        community_id: created.id,
+        user_id: user.id,
+        role: 'owner'
+      });
+      
+      // Update local state
+      const updatedCommunity = await db.entities.Community.get(created.id);
+      setCommunities(prev => [updatedCommunity, ...prev]);
+      setMyCommunities(prev => [...prev, updatedCommunity]);
+      setShowCreateCommunity(false);
+      setNewCommunity({
+        name: '',
+        description: '',
+        category: 'general',
+        visibility: 'public',
+        icon: '',
+        color: 'bg-primary/10 text-primary'
+      });
+    } catch (error) {
+      console.error('Error creating community:', error);
+    } finally {
+      setCreatingCommunity(false);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-foreground">Communities</h1>
+        <button
+          onClick={() => setShowCreateCommunity(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-xl font-medium hover:bg-primary/90 transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          Create Community
+        </button>
       </div>
 
       {loading ? (
@@ -1057,11 +1255,23 @@ function CommunitiesList({ user, communities, myCommunities, loading, onJoinComm
           ))}
         </div>
       )}
+
+      {/* Create Community Modal */}
+      {showCreateCommunity && (
+        <CreateCommunityModal
+          user={user}
+          newCommunity={newCommunity}
+          setNewCommunity={setNewCommunity}
+          onSubmit={handleCreateCommunity}
+          onClose={() => setShowCreateCommunity(false)}
+          creating={creatingCommunity}
+        />
+      )}
     </div>
   );
 }
 
-function PostsFeed({ user, posts, loading, onReact, onSavePost, formatTime, getPostTypeInfo, setShowCreatePost }) {
+function PostsFeed({ user, posts, loading, onReact, onSavePost, formatTime, getPostTypeInfo, setShowCreatePost, setActiveTab }) {
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
@@ -1112,19 +1322,197 @@ function PostsFeed({ user, posts, loading, onReact, onSavePost, formatTime, getP
   );
 }
 
-function MessagesPage({ user }) {
+function MessagesPage({ user, setActiveTab }) {
+  const [activeSection, setActiveSection] = useState('chats'); // chats, friends, requests
+  const [friends, setFriends] = useState([]);
+  const [pendingRequests, setPendingRequests] = useState([]);
+  const [sentRequests, setSentRequests] = useState([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showAddFriend, setShowAddFriend] = useState(false);
+  const [searchUsername, setSearchUsername] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [loadingFriends, setLoadingFriends] = useState(false);
+  const [loadingRequests, setLoadingRequests] = useState(false);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    loadFriends();
+    loadPendingRequests();
+    loadSentRequests();
+  }, []);
+
+  const loadFriends = async () => {
+    setLoadingFriends(true);
+    try {
+      const data = await db.friendship.getFriends();
+      setFriends(data || []);
+    } catch (error) {
+      console.error('Error loading friends:', error);
+    } finally {
+      setLoadingFriends(false);
+    }
+  };
+
+  const loadPendingRequests = async () => {
+    setLoadingRequests(true);
+    try {
+      const data = await db.friendship.getPendingFriendRequests();
+      setPendingRequests(data || []);
+    } catch (error) {
+      console.error('Error loading pending requests:', error);
+    } finally {
+      setLoadingRequests(false);
+    }
+  };
+
+  const loadSentRequests = async () => {
+    try {
+      const data = await db.friendship.getSentFriendRequests();
+      setSentRequests(data || []);
+    } catch (error) {
+      console.error('Error loading sent requests:', error);
+    }
+  };
+
+  const handleSearchUser = async () => {
+    if (!searchUsername.trim() || searchUsername.startsWith('@')) return;
+    setSearching(true);
+    try {
+      const results = await db.friendship.searchUserByUsername(searchUsername);
+      setSearchResults(results || []);
+    } catch (error) {
+      console.error('Error searching user:', error);
+      setSearchResults([]);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const handleSendFriendRequest = async (username) => {
+    try {
+      await db.friendship.sendFriendRequest(username);
+      setSearchUsername('');
+      setSearchResults([]);
+      setShowAddFriend(false);
+      loadSentRequests();
+    } catch (error) {
+      console.error('Error sending friend request:', error);
+      alert(error.message || 'Failed to send friend request');
+    }
+  };
+
+  const handleAcceptRequest = async (requestId) => {
+    try {
+      await db.friendship.acceptFriendRequest(requestId);
+      loadPendingRequests();
+      loadFriends();
+    } catch (error) {
+      console.error('Error accepting request:', error);
+      alert(error.message || 'Failed to accept request');
+    }
+  };
+
+  const handleRejectRequest = async (requestId) => {
+    try {
+      await db.friendship.rejectFriendRequest(requestId);
+      loadPendingRequests();
+    } catch (error) {
+      console.error('Error rejecting request:', error);
+      alert(error.message || 'Failed to reject request');
+    }
+  };
+
+  const handleCancelRequest = async (requestId) => {
+    try {
+      await db.friendship.cancelFriendRequest(requestId);
+      loadSentRequests();
+    } catch (error) {
+      console.error('Error canceling request:', error);
+      alert(error.message || 'Failed to cancel request');
+    }
+  };
+
+  const handleUnfriend = async (friendId) => {
+    if (!confirm('Are you sure you want to unfriend this user?')) return;
+    try {
+      await db.friendship.unfriend(friendId);
+      loadFriends();
+    } catch (error) {
+      console.error('Error unfriending:', error);
+      alert(error.message || 'Failed to unfriend');
+    }
+  };
+
   return (
-    <div className="animate-fade-in">
-      <h1 className="text-2xl font-bold text-foreground mb-6">Messages</h1>
-      <div className="rounded-2xl border border-border/60 bg-card p-8 text-center">
-        <MessageSquare className="w-12 h-12 mx-auto text-muted-foreground/50 mb-4" />
-        <h3 className="text-lg font-medium text-foreground mb-2">Direct Messages Coming Soon</h3>
-        <p className="text-muted-foreground mb-6">
-          Real-time one-to-one messaging with other students is being built.
-        </p>
-        <p className="text-sm text-muted-foreground">
-          This will use Supabase Realtime for instant message delivery.
-        </p>
+    <div className="animate-fade-in h-full flex flex-col">
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-foreground">Messages</h1>
+        <button
+          onClick={() => setShowAddFriend(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-xl font-medium hover:bg-primary/90 transition-colors"
+        >
+          <UserPlus className="w-4 h-4" />
+          Add Friend
+        </button>
+      </div>
+
+      {/* Tab Navigation */}
+      <div className="flex gap-2 mb-6 border-b border-border/60">
+        {[{
+          id: 'chats', label: 'Chats', count: friends.length
+        }, {
+          id: 'friends', label: 'Friends', count: friends.length
+        }, {
+          id: 'requests', label: 'Requests', count: pendingRequests.length + sentRequests.length
+        }].map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveSection(tab.id)}
+            className={cn(
+              "px-4 py-2 text-sm font-medium rounded-t-xl transition-colors border-b-2 -mb-px",
+              activeSection === tab.id
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {tab.label}
+            {tab.count > 0 && <span className="ml-2 px-2 py-0.5 text-xs bg-primary/10 text-primary rounded-full">{tab.count}</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* Add Friend Modal */}
+      {showAddFriend && (
+        <AddFriendModal
+          onClose={() => { setShowAddFriend(false); setSearchUsername(''); setSearchResults([]); }}
+          onSearch={handleSearchUser}
+          onSendRequest={handleSendFriendRequest}
+          searchUsername={searchUsername}
+          setSearchUsername={setSearchUsername}
+          searchResults={searchResults}
+          searching={searching}
+        />
+      )}
+
+      <div className="flex-1 overflow-hidden">
+        {activeSection === 'chats' && (
+          <ChatList friends={friends} loading={loadingFriends} />
+        )}
+
+        {activeSection === 'friends' && (
+          <FriendsList friends={friends} loading={loadingFriends} onUnfriend={handleUnfriend} />
+        )}
+
+        {activeSection === 'requests' && (
+          <FriendRequestsList
+            pendingRequests={pendingRequests}
+            sentRequests={sentRequests}
+            loading={loadingRequests}
+            onAccept={handleAcceptRequest}
+            onReject={handleRejectRequest}
+            onCancel={handleCancelRequest}
+          />
+        )}
       </div>
     </div>
   );
@@ -1586,6 +1974,129 @@ function HelpSomeonePage({ user, helpQuestions, myProfile, onReact, formatTime, 
   );
 }
 
+function CreateCommunityModal({ user, newCommunity, setNewCommunity, onSubmit, onClose, creating }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.95, y: 20 }}
+        className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-card rounded-2xl border border-border/60 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <form onSubmit={onSubmit} className="p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold text-foreground">Create Community</h2>
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-2 text-muted-foreground hover:text-foreground transition-colors rounded-lg hover:bg-muted"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Name */}
+          <div>
+            <label className="block text-sm font-medium text-foreground mb-1">Community Name</label>
+            <input
+              type="text"
+              value={newCommunity.name}
+              onChange={(e) => setNewCommunity(prev => ({ ...prev, name: e.target.value }))}
+              placeholder="e.g., DSA Study Group"
+              className="w-full px-3 py-2 bg-muted/50 border border-border/60 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/50"
+              required
+            />
+          </div>
+
+          {/* Description */}
+          <div>
+            <label className="block text-sm font-medium text-foreground mb-1">Description</label>
+            <textarea
+              value={newCommunity.description}
+              onChange={(e) => setNewCommunity(prev => ({ ...prev, description: e.target.value }))}
+              placeholder="Describe your community..."
+              rows={3}
+              className="w-full px-3 py-2 bg-muted/50 border border-border/60 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
+              required
+            />
+          </div>
+
+          {/* Visibility */}
+          <div>
+            <label className="block text-sm font-medium text-foreground mb-1">Visibility</label>
+            <select
+              value={newCommunity.visibility}
+              onChange={(e) => setNewCommunity(prev => ({ ...prev, visibility: e.target.value }))}
+              className="w-full px-3 py-2 bg-muted/50 border border-border/60 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/50"
+            >
+              <option value="public">Public - Anyone can find and join</option>
+              <option value="private">Private - Only invited members can join</option>
+            </select>
+          </div>
+
+          {/* Color */}
+          <div>
+            <label className="block text-sm font-medium text-foreground mb-2">Color Theme</label>
+            <div className="grid grid-cols-5 gap-2">
+              {[ 
+                'bg-primary/10 text-primary',
+                'bg-blue-500/10 text-blue-500',
+                'bg-green-500/10 text-green-500',
+                'bg-purple-500/10 text-purple-500',
+                'bg-orange-500/10 text-orange-500'
+              ].map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  onClick={() => setNewCommunity(prev => ({ ...prev, color }))}
+                  className={cn(
+                    "w-10 h-10 rounded-xl flex items-center justify-center text-lg font-medium transition-all",
+                    color,
+                    newCommunity.color === color && "ring-2 ring-primary"
+                  )}
+                >
+                  {newCommunity.icon || 'A'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex gap-3 pt-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-2 bg-muted text-muted-foreground rounded-xl font-medium hover:bg-muted/80 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={creating || !newCommunity.name.trim() || !newCommunity.description.trim()}
+              className="flex-1 px-4 py-2 bg-primary text-primary-foreground rounded-xl font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {creating ? (
+                <span className="flex items-center justify-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Creating...
+                </span>
+              ) : (
+                'Create Community'
+              )}
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 function CreatePostModal({ user, myCommunities, newPost, setNewPost, onSubmit, onClose, creating }) {
   return (
     <motion.div
@@ -1743,7 +2254,317 @@ function CreatePostModal({ user, myCommunities, newPost, setNewPost, onSubmit, o
   );
 }
 
-function CommunityDetailModal({ community, user, isMember, onJoin, onClose }) {
+function AddFriendModal({ onClose, onSearch, onSendRequest, searchUsername, setSearchUsername, searchResults, searching }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.95, y: 20 }}
+        className="w-full max-w-md max-h-[90vh] overflow-y-auto bg-card rounded-2xl border border-border/60 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold text-foreground">Add Friend</h2>
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-2 text-muted-foreground hover:text-foreground transition-colors rounded-lg hover:bg-muted"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-foreground mb-2">Enter username (with @)</label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">@</span>
+              <input
+                type="text"
+                value={searchUsername}
+                onChange={(e) => setSearchUsername(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') onSearch(); }}
+                placeholder="Enter @username"
+                className="w-full pl-8 pr-3 py-2 bg-muted/50 border border-border/60 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/50"
+              />
+            </div>
+          </div>
+
+          <button
+            onClick={onSearch}
+            disabled={!searchUsername.trim() || searchUsername.startsWith('@') || searching}
+            className="w-full px-4 py-2 bg-primary text-primary-foreground rounded-xl font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {searching ? (
+              <span className="flex items-center justify-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Searching...
+              </span>
+            ) : (
+              'Search'
+            )}
+          </button>
+
+          {searchResults.length > 0 && (
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {searchResults.map((result) => (
+                <div key={result.user_id} className="flex items-center gap-3 p-3 bg-muted/50 rounded-xl">
+                  <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+                    {result.display_name?.charAt(0) || result.username?.charAt(0) || '?'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-foreground truncate">{result.display_name || result.username}</p>
+                    <p className="text-sm text-muted-foreground truncate">@{result.username}</p>
+                    {result.bio && <p className="text-xs text-muted-foreground truncate mt-1">{result.bio}</p>}
+                  </div>
+                  {!result.is_friend && !result.has_pending_request && (
+                    <button
+                      onClick={() => onSendRequest(result.username)}
+                      className="px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
+                    >
+                      {result.request_status === 'sent' ? 'Request Sent' : 'Send Request'}
+                    </button>
+                  )}
+                  {result.has_pending_request && (
+                    <span className="px-3 py-1.5 text-sm bg-orange-500/10 text-orange-500 rounded-lg">
+                      {result.request_status === 'received' ? 'Pending' : 'Request Sent'}
+                    </span>
+                  )}
+                  {result.is_friend && (
+                    <span className="px-3 py-1.5 text-sm bg-green-500/10 text-green-500 rounded-lg">Friends</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function ChatList({ friends, loading }) {
+  if (loading) {
+    return (
+      <div className="space-y-3">
+        {[1,2,3].map(i => (
+          <div key={i} className="h-16 bg-muted/50 rounded-xl animate-pulse" />
+        ))}
+      </div>
+    );
+  }
+
+  if (friends.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-center p-8">
+        <Users className="w-12 h-12 text-muted-foreground/50 mb-4" />
+        <h3 className="text-lg font-medium text-foreground mb-2">No friends yet</h3>
+        <p className="text-muted-foreground mb-6">Add friends to start chatting!</p>
+        <button
+          onClick={() => setShowAddFriend(true)}
+          className="px-5 py-2.5 bg-primary text-primary-foreground rounded-xl font-medium hover:bg-primary/90 transition-colors"
+        >
+          <UserPlus className="w-4 h-4 mr-2" />
+          Add Friend
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 overflow-y-auto p-4">
+      {friends.map((friend) => (
+        <button
+          key={friend.friend_id}
+          className="w-full flex items-center gap-3 p-3 bg-card rounded-xl border border-border/60 hover:bg-muted/50 transition-colors"
+        >
+          <div className="relative">
+            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-secondary/20 flex items-center justify-center">
+              <span className="text-xl font-bold text-primary">
+                {friend.display_name?.charAt(0) || friend.username?.charAt(0) || '?'}
+              </span>
+            </div>
+            {friend.unread_count > 0 && (
+              <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
+                {friend.unread_count > 9 ? '9+' : friend.unread_count}
+              </span>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-medium text-foreground truncate">
+              {friend.display_name || friend.username}
+            </p>
+            <p className="text-sm text-muted-foreground truncate">
+              {friend.username ? `@${friend.username}` : 'No username'}
+            </p>
+          </div>
+          {friend.last_message_at && (
+            <span className="text-xs text-muted-foreground">
+              {formatTime(friend.last_message_at)}
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function FriendsList({ friends, loading, onUnfriend }) {
+  if (loading) {
+    return (
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {[1,2,3,4,5,6].map(i => (
+          <div key={i} className="h-40 bg-muted/50 rounded-xl animate-pulse" />
+        ))}
+      </div>
+    );
+  }
+
+  if (friends.length === 0) {
+    return (
+      <div className="text-center py-16">
+        <Users className="w-12 h-12 mx-auto text-muted-foreground/50 mb-4" />
+        <h3 className="text-lg font-medium text-foreground mb-2">No friends yet</h3>
+        <p className="text-muted-foreground mb-6">Add friends to see them here!</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 p-4">
+      {friends.map((friend) => (
+        <div
+          key={friend.friend_id}
+          className="flex items-center gap-3 p-4 bg-card rounded-xl border border-border/60 hover:bg-muted/50 transition-colors"
+        >
+          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-secondary/20 flex items-center justify-center flex-shrink-0">
+            <span className="text-xl font-bold text-primary">
+              {friend.display_name?.charAt(0) || friend.username?.charAt(0) || '?'}
+            </span>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-medium text-foreground truncate">
+              {friend.display_name || friend.username || 'Friend'}
+            </p>
+            <p className="text-sm text-muted-foreground truncate">
+              {friend.username ? `@${friend.username}` : 'No username'}
+            </p>
+          </div>
+          <button
+            onClick={() => onUnfriend(friend.friend_id)}
+            className="px-3 py-1.5 text-sm text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
+          >
+            Unfriend
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FriendRequestsList({ pendingRequests, sentRequests, loading, onAccept, onReject, onCancel }) {
+  if (loading) {
+    return (
+      <div className="space-y-3">
+        {[1,2,3].map(i => (
+          <div key={i} className="h-20 bg-muted/50 rounded-xl animate-pulse" />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 p-4">
+      {pendingRequests.length > 0 && (
+        <div>
+          <h3 className="text-lg font-semibold text-foreground mb-4">Received Requests</h3>
+          <div className="space-y-3">
+            {pendingRequests.map((request) => (
+              <div key={request.id} className="flex items-center gap-3 p-4 bg-card rounded-xl border border-border/60">
+                <div className="w-12 h-12 rounded-xl bg-primary/10 text-primary flex items-center justify-center flex-shrink-0">
+                  {request.sender_display_name?.charAt(0) || request.sender_username?.charAt(0) || '?'}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-foreground truncate">
+                    {request.sender_display_name || request.sender_username}
+                  </p>
+                  <p className="text-sm text-muted-foreground truncate">
+                    @{request.sender_username}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => onAccept(request.id)}
+                    className="flex-1 px-3 py-2 bg-green-500 text-white rounded-lg font-medium hover:bg-green-500/90 transition-colors"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    onClick={() => onReject(request.id)}
+                    className="flex-1 px-3 py-2 bg-rose-500 text-white rounded-lg font-medium hover:bg-rose-500/90 transition-colors"
+                  >
+                    Reject
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {sentRequests.length > 0 && (
+        <div>
+          <h3 className="text-lg font-semibold text-foreground mb-4">Sent Requests</h3>
+          <div className="space-y-3">
+            {sentRequests.map((request) => (
+              <div key={request.id} className="flex items-center gap-3 p-4 bg-card rounded-xl border border-border/60">
+                <div className="w-12 h-12 rounded-xl bg-primary/10 text-primary flex items-center justify-center flex-shrink-0">
+                  {request.receiver_display_name?.charAt(0) || request.receiver_username?.charAt(0) || '?'}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-foreground truncate">
+                    {request.receiver_display_name || request.receiver_username}
+                  </p>
+                  <p className="text-sm text-muted-foreground truncate">
+                    @{request.receiver_username}
+                  </p>
+                </div>
+                <span className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-full",
+                  request.status === 'pending' ? "bg-yellow-500/10 text-yellow-500" :
+                  request.status === 'accepted' ? "bg-green-500/10 text-green-500" :
+                  "bg-rose-500/10 text-rose-500"
+                )}>
+                  {request.status}
+                </span>
+                {request.status === 'pending' && (
+                  <button
+                    onClick={() => onCancel(request.id)}
+                    className="px-3 py-1.5 text-sm text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CommunityDetailModal({ community, user, isMember, onJoin, onDeleteCommunity, onClose }) {
+  const isOwner = community.created_by_id === user.id;
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -1806,9 +2627,74 @@ function CommunityDetailModal({ community, user, isMember, onJoin, onClose }) {
             {isMember ? 'Leave Community' : 'Join Community'}
           </button>
 
+          {isOwner && (
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              className="w-full px-4 py-3 rounded-xl font-medium transition-colors bg-rose-500/10 text-rose-500 hover:bg-rose-500/20"
+            >
+              Delete Community
+            </button>
+          )}
+
           <p className="text-xs text-muted-foreground text-center">
             {community.visibility === 'public' ? 'Public community' : 'Private community'}
           </p>
+
+          {showDeleteConfirm && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+              onClick={() => setShowDeleteConfirm(false)}
+            >
+              <motion.div
+                initial={{ scale: 0.95, y: 20 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.95, y: 20 }}
+                className="w-full max-w-md bg-card rounded-2xl border border-border/60 shadow-xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="p-6 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-semibold text-foreground">Delete Community</h3>
+                    <button
+                      onClick={() => setShowDeleteConfirm(false)}
+                      className="p-2 text-muted-foreground hover:text-foreground transition-colors rounded-lg hover:bg-muted"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                  
+                  <div className="text-center">
+                    <AlertCircle className="w-12 h-12 mx-auto text-rose-500 mb-4" />
+                    <h4 className="font-semibold text-foreground mb-2">Delete "{community.name}"?</h4>
+                    <p className="text-muted-foreground text-sm">
+                      This will permanently remove the community and all its associated content including posts, members, and challenges. This action cannot be undone.
+                    </p>
+                  </div>
+                  
+                  <div className="flex gap-3 pt-4">
+                    <button
+                      onClick={() => setShowDeleteConfirm(false)}
+                      className="flex-1 px-4 py-2 bg-muted text-muted-foreground rounded-xl font-medium hover:bg-muted/80 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => {
+                        onDeleteCommunity(community.id);
+                        setShowDeleteConfirm(false);
+                      }}
+                      className="flex-1 px-4 py-2 bg-rose-500 text-white rounded-xl font-medium hover:bg-rose-500/90 transition-colors"
+                    >
+                      Delete Community
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
         </div>
       </motion.div>
     </motion.div>
