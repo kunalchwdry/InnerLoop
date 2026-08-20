@@ -106,6 +106,20 @@ const [activeTab, setActiveTab] = useState('home'); // home, communities, posts,
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [postToDelete, setPostToDelete] = useState(null);
+  const [showCreateCommunity, setShowCreateCommunity] = useState(false);
+  const [creatingCommunity, setCreatingCommunity] = useState(false);
+  const [newCommunity, setNewCommunity] = useState({
+    name: '',
+    slug: '',
+    description: '',
+    icon: '',
+    color: 'bg-blue-500',
+    banner_url: '',
+    visibility: 'public',
+    allow_posts: true,
+    allow_member_invites: true,
+    require_approval: false,
+  });
 
   // Load data
   const loadData = useCallback(async () => {
