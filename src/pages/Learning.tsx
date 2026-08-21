@@ -608,7 +608,7 @@ export default function Learning() {
       <div className="border-b border-border/60">
         <nav className="flex gap-1 pb-px" role="tablist">
           {[
-            { id: 'recommended', label: '🔥 Recommended For You', icon: Flame },
+            { id: 'recommended', label: 'Recommended For You', icon: Flame },
             { id: 'continue', label: 'Continue Learning', icon: Clock },
             { id: 'subjects', label: 'Subjects', icon: BookOpen },
             { id: 'completed', label: 'Completed', icon: CheckCircle },
@@ -666,7 +666,11 @@ export default function Learning() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredRecommended.map(resource => renderResourceCard(resource, true).key(resource.id))}
+              {filteredRecommended.map(resource => (
+                <React.Fragment key={resource.id}>
+                  {renderResourceCard(resource, true)}
+                </React.Fragment>
+              ))}
             </div>
           )}
         </div>
@@ -681,7 +685,11 @@ export default function Learning() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {continueResources.map(resource => renderResourceCard(resource, false).key(resource.id))}
+              {continueResources.map(resource => (
+                <React.Fragment key={resource.id}>
+                  {renderResourceCard(resource, false)}
+                </React.Fragment>
+              ))}
             </div>
           )} 
         </div>
